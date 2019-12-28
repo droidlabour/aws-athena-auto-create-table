@@ -9,116 +9,74 @@ Metadata:
         default: Athena Settings
       Parameters:
       - InputBucketName
-      - InputBucketPath
       - AthenaDBName
-      - TableName
-      - TableColumns
 
 Parameters:
   InputBucketName:
     Type: String
     Description: Input S3 Bucket Name where files will be uploaded for Athena
-  InputBucketPath:
-    Type: String
-    Description: Input S3 Bucket Path where files will be uploaded for Athena
-  TableColumns:
-    Type: String
-    Description: 'The columns and their types in the format: col_name_1 data_type_1,  col_name_2 data_type_2, col_name_3 data_type_3, .... col_name_n data_type_n'
-    Default: display-name string, last-logon-date string, account-creation-date string, username string, first-name string, last-name string, contractor-employee string, astellas-userid string, manager string, department string, company string, astellas-office string, email string, account-status string, account-location string, groups string
   AthenaDBName:
     Type: String
     AllowedPattern: ^[a-z]*$
     Description: Athena Database name, will be created if it does not exist
-  TableName:
-    Type: String
-    AllowedPattern: ^[a-z0-9-_]+$
-    Description: Athena table name
 
 Resources:
   InputBucket:
     Type: AWS::S3::Bucket
+    DependsOn: LambdaInvokePermission
     Properties:
       BucketName: !Ref InputBucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          -
+            Function: !GetAtt CreateTableFunction.Arn
+            Event: "s3:ObjectCreated:*"
+            Filter:
+              S3Key:
+                Rules:
+                  -
+                    Name: suffix
+                    Value: csv
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref CreateTableFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${InputBucketName}
   OutputBucket:
     Type: AWS::S3::Bucket
-  CreateTable:
-    Type: AWS::CloudFormation::CustomResource
-    Properties:
-      ServiceToken: !GetAtt CreateTableFunction.Arn
-      AthenaDBName: !Ref AthenaDBName
-      TableName: !Ref TableName
-      Columns: !Ref TableColumns
-      SourceUri: !Sub s3://${InputBucket}/${InputBucketPath}/
-      OutputLocation: !Sub s3://${OutputBucket}/
   CreateTableFunction:
     Type: AWS::Lambda::Function
     Properties:
       Code:
         ZipFile: |
+          import os
+          import re
+          import csv
           import json
           import traceback
           from time import sleep
-          import boto3
-          import cfnresponse
+          from urllib.parse import unquote
 
-          client = boto3.client('athena')
+          import boto3
+
+          athena = boto3.client('athena')
+          s3 = boto3.client('s3')
+          db_name = os.getenv('AthenaDbName')
+          output_bucket = os.getenv('OutputBucket')
           create_table_tpl = """
           CREATE EXTERNAL TABLE IF NOT EXISTS
-            {db_name}.{table_name} {columns}
+            {}.{} {}
             ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
             WITH SERDEPROPERTIES ('serialization.format' = ',', 'field.delim' = ',')
-            LOCATION '{location}'
+            LOCATION '{}'
             TBLPROPERTIES ('skip.header.line.count'='1');
-          """
-          create_view_tpl = """
-          CREATE OR REPLACE VIEW "{view_name}" AS
-            SELECT *,
-            Coalesce(
-                {v1} '%Y-%m-%d %H:%i:%s')),
-                {v1} '%Y/%m/%d %H:%i:%s')),
-                {v1} '%d %M %Y %H:%i:%s')),
-                {v1} '%d/%m/%Y %H:%i:%s')),
-                {v1} '%d-%m-%Y %H:%i:%s')),
-                {v1} '%Y-%m-%d')),
-                {v1} '%Y/%m/%d')),
-                {v1} '%d %M %Y')),
-                {v1} '%Y-%m-%d %H:%i:%s %p')),
-                {v1} '%Y/%m/%d %H:%i:%s %p')),
-                {v1} '%d %M %Y %H:%i:%s %p')),
-                {v1} '%d/%m/%Y %H:%i:%s %p')),
-                {v1} '%d-%m-%Y %H:%i:%s %p')),
-                {v1} '%Y-%m-%d %p')),
-                {v1} '%Y/%m/%d %p')),
-                {v1} '%d %M %Y %p')),
-                {v1} '%c/%d/%Y %l:%i:%s %p')),
-                {v1} '%c-%d-%Y %l:%i:%s %p'))
-            )as "account-creation-date-new",
-            Coalesce(
-                {v2} '%Y-%m-%d %H:%i:%s')),
-                {v2} '%Y/%m/%d %H:%i:%s')),
-                {v2} '%d %M %Y %H:%i:%s')),
-                {v2} '%d/%m/%Y %H:%i:%s')),
-                {v2} '%d-%m-%Y %H:%i:%s')),
-                {v2} '%Y-%m-%d')),
-                {v2} '%Y/%m/%d')),
-                {v2} '%d %M %Y')),
-                {v2} '%Y-%m-%d %H:%i:%s %p')),
-                {v2} '%Y/%m/%d %H:%i:%s %p')),
-                {v2} '%d %M %Y %H:%i:%s %p')),
-                {v2} '%d/%m/%Y %H:%i:%s %p')),
-                {v2} '%d-%m-%Y %H:%i:%s %p')),
-                {v2} '%Y-%m-%d %p')),
-                {v2} '%Y/%m/%d %p')),
-                {v2} '%d %M %Y %p')),
-                {v2} '%c/%d/%Y %l:%i:%s %p')),
-                {v2} '%c-%d-%Y %l:%i:%s %p'))
-            )as "last-logon-date-new"
-            FROM "{table_name}";
           """
 
 
           def query_status(qid):
-              return client.get_query_execution(QueryExecutionId=qid)['QueryExecution']['Status']['State']
+              return athena.get_query_execution(QueryExecutionId=qid)['QueryExecution']['Status']['State']
 
 
           def wait_query_to_finish(qid):
@@ -128,69 +86,72 @@ Resources:
               print("query id finished {}".format(qid))
 
 
-          def run_query(query, payload):
+          def run_query(query):
               print("Running query: {}".format(query))
-              qid = client.start_query_execution(
+              qid = athena.start_query_execution(
                   QueryString=query,
-                  QueryExecutionContext={'Database': payload['AthenaDBName']},
-                  ResultConfiguration={
-                      'OutputLocation': payload['OutputLocation']
-                  }
+                  QueryExecutionContext={'Database': db_name},
+                  ResultConfiguration={'OutputLocation': output_bucket}
               )['QueryExecutionId']
               print("query id: {}".format(qid))
               return qid
 
 
-          def esc_columns(d):
-              x = d['Columns']
-              y = x.split(',')
-              z = []
-              for i in y:
-                  s = i.strip().split()
-                  field = '`' + s[0] + '`'
-                  type = s[1]
-                  schema = ' '.join([field, type])
-                  z.append(schema)
-              return '(' + ', '.join(z) + ')'
-
-
-          def lambda_handler(event, context):
+          def handler(event, context):
               print(json.dumps(event))
-              status = cfnresponse.FAILED
-              cfn_input = event['ResourceProperties']
-              query_dict = {
-                  'db_name': cfn_input['AthenaDBName'],
-                  'table_name': cfn_input['TableName'].replace('-', '_'),
-                  'columns': esc_columns(cfn_input),
-                  'location': cfn_input['SourceUri']
-              }
 
               try:
-                  if event['RequestType'] != 'Delete':
-                      query = "CREATE DATABASE IF NOT EXISTS {};".format(query_dict['db_name'])
-                      query_id = run_query(query, cfn_input)
-                      wait_query_to_finish(query_id)
+                  query = "CREATE DATABASE IF NOT EXISTS {};".format(db_name)
+                  query_id = run_query(query)
+                  wait_query_to_finish(query_id)
 
-                      query = create_table_tpl.format(**query_dict)
-                      query_id = run_query(query, cfn_input)
+                  for r in event['Records']:
+                      bucket = r['s3']['bucket']['name']
+                      key = r['s3']['object']['key'].replace('+', ' ')
+                      if 'view' in key: # Skip for files under view dir
+                          continue
+                      csv_file = '/tmp/' + os.path.basename(key)
+                      csv_path = os.path.dirname(key)
+                      table_name = re.sub('[^a-z0-9_]+', '_', csv_path.split('/')[-1].lower())
+                      location = 's3://{}/{}/'.format(bucket, csv_path)
+                      s3.download_file(bucket, unquote(key), csv_file)
+                      columns = []
+                      with open(csv_file, 'r') as f:
+                          for i in csv.DictReader(f).fieldnames:
+                              columns.append('`' + re.sub('[^a-z0-9-]+', '-', i.lower()) + '` string')
+                      columns = '(' + ', ' . join(columns) + ')'
+                      
+                      query = create_table_tpl.format(db_name, table_name, columns, location)
+                      query_id = run_query(query)
                       wait_query_to_finish(query_id)
-
-                      query_dict['view_name'] = query_dict['table_name'] + '_view'
-                      query_dict['v1'] = 'try(date_parse("account-creation-date",'
-                      query_dict['v2'] = 'try(date_parse("last-logon-date",'
-                      query = create_view_tpl.format(**query_dict)
-                      query_id = run_query(query, cfn_input)
-                      wait_query_to_finish(query_id)
-                  status = cfnresponse.SUCCESS
+                      
+                      x = csv_path.split('/')[:-1]
+                      x.append('views/')
+                      view_path = '/' . join(x)
+                      files = s3.list_objects(Bucket=bucket, Prefix=view_path)
+                      if 'Contents' in files.keys():
+                          for k, f in enumerate(files['Contents']):
+                              if f['Key'].endswith('/'):
+                                  continue
+                              view_file = '/tmp/' + os.path.basename(f['Key'])
+                              s3.download_file(bucket, f['Key'], view_file)
+                              with open(view_file, 'r') as v:
+                                  view_name = table_name + '_' + str(k) + '_view'
+                                  query = v.read().format(view_name, table_name)
+                                  query_id = run_query(query)
+                                  wait_query_to_finish(query_id)
               except Exception as e:
                   print(str(e))
                   traceback.print_exc()
-              finally:
-                  cfnresponse.send(event, context, status, {})
-      Handler: index.lambda_handler
+              return 0
+      Handler: index.handler
+      Environment:
+        Variables:
+          AthenaDbName: !Ref AthenaDBName
+          OutputBucket: !Sub s3://${OutputBucket}/
       FunctionName: Quicksight-Athena-Function
       Role: !GetAtt CreateTableRole.Arn
-      Runtime: python2.7
+      Runtime: python3.7
       Timeout: 300
   CreateTableRole:
     Type: AWS::IAM::Role
