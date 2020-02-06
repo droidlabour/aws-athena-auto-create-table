@@ -19,6 +19,10 @@ Parameters:
     Type: String
     AllowedPattern: ^[a-z]*$
     Description: Athena Database name, will be created if it does not exist
+  UpdateMarker:
+    Type: String
+    Default: 1.0
+    Description: Leave this empty, this is just for debugging purpose.
 
 Resources:
   InputBucket:
@@ -26,6 +30,16 @@ Resources:
     DependsOn: LambdaInvokePermission
     Properties:
       BucketName: !Ref InputBucketName
+      LifecycleConfiguration:
+        Rules:
+        - Id: GlacierRule
+          Status: Enabled
+          TagFilters:
+            - Key: Type
+              Value: AthenaDataSet
+          Transitions:
+            - TransitionInDays: '30'
+              StorageClass: GLACIER
       NotificationConfiguration:
         LambdaConfigurations:
           -
@@ -58,9 +72,9 @@ Resources:
           import traceback
           from time import sleep
           from urllib.parse import unquote
-
+          
           import boto3
-
+          
           athena = boto3.client('athena')
           s3 = boto3.client('s3')
           db_name = os.getenv('AthenaDbName')
@@ -73,19 +87,19 @@ Resources:
             LOCATION '{}'
             TBLPROPERTIES ('skip.header.line.count'='1');
           """
-
-
+          
+          
           def query_status(qid):
               return athena.get_query_execution(QueryExecutionId=qid)['QueryExecution']['Status']['State']
-
-
+          
+          
           def wait_query_to_finish(qid):
               while query_status(qid) in ['QUEUED', 'RUNNING']:
                   print("Waiting query id to finish {}".format(qid))
                   sleep(5)
               print("query id finished {}".format(qid))
-
-
+          
+          
           def run_query(query):
               print("Running query: {}".format(query))
               qid = athena.start_query_execution(
@@ -95,21 +109,33 @@ Resources:
               )['QueryExecutionId']
               print("query id: {}".format(qid))
               return qid
-
-
+          
+          
           def handler(event, context):
               print(json.dumps(event))
-
+          
               try:
                   query = "CREATE DATABASE IF NOT EXISTS {};".format(db_name)
                   query_id = run_query(query)
                   wait_query_to_finish(query_id)
-
+          
                   for r in event['Records']:
                       bucket = r['s3']['bucket']['name']
                       key = r['s3']['object']['key'].replace('+', ' ')
-                      if 'view' in key: # Skip for files under view dir
+                      if 'view' in key:  # Skip for files under view dir
                           continue
+                      s3.put_object_tagging(
+                          Bucket=bucket,
+                          Key=key,
+                          Tagging={
+                              'TagSet': [
+                                  {
+                                      'Key': 'Type',
+                                      'Value': 'AthenaDataSet'
+                                  }
+                              ]
+                          }
+                      )
                       csv_file = '/tmp/' + os.path.basename(key)
                       csv_path = os.path.dirname(key)
                       table_name = re.sub('[^a-z0-9_]+', '_', csv_path.split('/')[-1].lower())
@@ -120,11 +146,11 @@ Resources:
                           for i in csv.DictReader(f).fieldnames:
                               columns.append('`' + re.sub('[^a-z0-9-]+', '-', i.lower()) + '` string')
                       columns = '(' + ', ' . join(columns) + ')'
-                      
+          
                       query = create_table_tpl.format(db_name, table_name, columns, location)
                       query_id = run_query(query)
                       wait_query_to_finish(query_id)
-                      
+          
                       x = csv_path.split('/')[:-1]
                       x.append('views/')
                       view_path = '/' . join(x)
@@ -186,6 +212,91 @@ Resources:
             - logs:CreateLogStream
             - logs:PutLogEvents
             Resource: arn:aws:logs:*:*:*
+  AddTagsToS3ObjectsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import fnmatch
+
+          import boto3
+
+          import cfnresponse
+
+          s3 = boto3.client('s3')
+          status = cfnresponse.SUCCESS
+
+          def handler(event, context):
+              print(json.dumps(event))
+              print(context)
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, status, {}, None)
+                  return 0
+              bucket = event['ResourceProperties']['InputBucket']
+              p1 = s3.get_paginator('list_objects_v2')
+              p2 = p1.paginate(Bucket=bucket)
+              
+              for i in p2:
+                  if 'Contents' in i.keys():
+                      for k in i['Contents']:
+                          if fnmatch.fnmatch(k['Key'], '*.csv') and not fnmatch.fnmatch(k['Key'], '*/views/*'):
+                              key = k['Key'].replace('+', ' ')
+                              print('Tagging key ' + key)
+                              s3.put_object_tagging(
+                                  Bucket=bucket,
+                                  Key=key,
+                                  Tagging={
+                                      'TagSet': [
+                                          {
+                                              'Key': 'Type',
+                                              'Value': 'AthenaDataSet'
+                                          }
+                                      ]
+                                  }
+                              )
+              cfnresponse.send(event, context, status, {}, None)
+              return 0
+      Handler: index.handler
+      FunctionName: Add-Tags-To-S3Objects-Function
+      Role: !GetAtt AddTagsToS3ObjectsRole.Arn
+      Runtime: python3.7
+      Timeout: 300
+  AddTagsToS3ObjectsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: AddTagsToS3ObjectsPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: s3:*
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+  AddTagsToS3Objects:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: InputBucket
+    Properties:
+      ServiceToken: !GetAtt 'AddTagsToS3ObjectsFunction.Arn'
+      UpdateMarker: !Ref UpdateMarker
+      InputBucket: !Ref InputBucketName
 
 Outputs:
   OutputLocation:

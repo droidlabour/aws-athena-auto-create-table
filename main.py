@@ -55,8 +55,20 @@ def handler(event, context):
         for r in event['Records']:
             bucket = r['s3']['bucket']['name']
             key = r['s3']['object']['key'].replace('+', ' ')
-            if 'view' in key: # Skip for files under view dir
+            if 'view' in key:  # Skip for files under view dir
                 continue
+            s3.put_object_tagging(
+                Bucket=bucket,
+                Key=key,
+                Tagging={
+                    'TagSet': [
+                        {
+                            'Key': 'Type',
+                            'Value': 'AthenaDataSet'
+                        }
+                    ]
+                }
+            )
             csv_file = '/tmp/' + os.path.basename(key)
             csv_path = os.path.dirname(key)
             table_name = re.sub('[^a-z0-9_]+', '_', csv_path.split('/')[-1].lower())
@@ -67,11 +79,11 @@ def handler(event, context):
                 for i in csv.DictReader(f).fieldnames:
                     columns.append('`' + re.sub('[^a-z0-9-]+', '-', i.lower()) + '` string')
             columns = '(' + ', ' . join(columns) + ')'
-            
+
             query = create_table_tpl.format(db_name, table_name, columns, location)
             query_id = run_query(query)
             wait_query_to_finish(query_id)
-            
+
             x = csv_path.split('/')[:-1]
             x.append('views/')
             view_path = '/' . join(x)
