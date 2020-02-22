@@ -1,6 +1,5 @@
 import os
 import re
-import csv
 import json
 import traceback
 from time import sleep
@@ -16,7 +15,7 @@ create_table_tpl = """
 CREATE EXTERNAL TABLE IF NOT EXISTS
   {}.{} {}
   ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
-  WITH SERDEPROPERTIES ('serialization.format' = ',', 'field.delim' = ',')
+  WITH SERDEPROPERTIES ({})
   LOCATION '{}'
   TBLPROPERTIES ('skip.header.line.count'='1');
 """
@@ -24,6 +23,16 @@ CREATE EXTERNAL TABLE IF NOT EXISTS
 
 def query_status(qid):
     return athena.get_query_execution(QueryExecutionId=qid)['QueryExecution']['Status']['State']
+
+
+def create_columns(columns):
+    x = []
+    for i in columns:
+        i = i.strip().lower()
+        i = re.sub('^"', '', i)
+        i = re.sub('"$', '', i)
+        x.append('`' + re.sub('[^a-z0-9-]+', '-', i) + '` string')
+    return x
 
 
 def wait_query_to_finish(qid):
@@ -75,12 +84,20 @@ def handler(event, context):
             location = 's3://{}/{}/'.format(bucket, csv_path)
             s3.download_file(bucket, unquote(key), csv_file)
             columns = []
+            serde_prop = ''
             with open(csv_file, 'r') as f:
-                for i in csv.DictReader(f).fieldnames:
-                    columns.append('`' + re.sub('[^a-z0-9-]+', '-', i.lower()) + '` string')
+                _ = f.readline()
+                a = _.split('|')
+                b = _.split(',')
+                if len(a) > len(b):
+                    serde_prop = "'separatorChar' = '|', 'serialization.format' = ',', 'field.delim' = '|'"
+                    columns = create_columns(a)
+                else:
+                    serde_prop = "'serialization.format' = ',', 'field.delim' = ','"
+                    columns = create_columns(b)
             columns = '(' + ', ' . join(columns) + ')'
 
-            query = create_table_tpl.format(db_name, table_name, columns, location)
+            query = create_table_tpl.format(db_name, table_name, columns, serde_prop, location)
             query_id = run_query(query)
             wait_query_to_finish(query_id)
 
