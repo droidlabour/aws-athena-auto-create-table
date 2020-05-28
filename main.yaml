@@ -314,6 +314,153 @@ Resources:
       ServiceToken: !GetAtt 'AddTagsToS3ObjectsFunction.Arn'
       UpdateMarker: !Ref UpdateMarker
       InputBucket: !Ref InputBucketName
+  DeleteOldAthenaDbViewFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import os
+          import re
+          import json
+          import traceback
+          from time import sleep
+          from datetime import datetime
+          
+          import boto3
+          
+          athena = boto3.client('athena')
+          dbName = os.getenv('AthenaDbName')
+          oputBucket = os.getenv('OutputBucket')
+          
+          
+          def queryStatus(qid):
+              return athena.get_query_execution(QueryExecutionId=qid)['QueryExecution']['Status']['State']
+          
+          
+          def getQueryResult(qid):
+              result = athena.get_query_results(QueryExecutionId=qid)
+              if 'ResultSet' in result.keys():
+                  if 'Rows' in result['ResultSet'].keys():
+                      return result['ResultSet']['Rows']
+              return []
+          
+          
+          def wait4Query(qid):
+              while queryStatus(qid) in ['QUEUED', 'RUNNING']:
+                  print("Waiting query id to finish {}".format(qid))
+                  sleep(5)
+              print("query id finished {}".format(qid))
+              return qid
+          
+          
+          def run_query(query):
+              print("Running query: {}".format(query))
+              qid = athena.start_query_execution(
+                  QueryString=query,
+                  QueryExecutionContext={'Database': dbName},
+                  ResultConfiguration={'OutputLocation': oputBucket}
+              )['QueryExecutionId']
+              print("query id: {}".format(qid))
+              return qid
+          
+          
+          def handler(event, context):
+              print(json.dumps(event))
+              epocRegex = r'\t(\d.+)$'
+              delete = {'tables': [], 'views': []}
+          
+              try:
+                  query = 'SHOW TABLES;'
+                  tableResults = getQueryResult(wait4Query(run_query(query)))
+                  for tableResult in tableResults:
+                      table = tableResult['Data'][0]['VarCharValue']
+                      print("Table: {}".format(table))
+                      query = "SHOW TBLPROPERTIES {}('transient_lastDdlTime');".format(table)
+                      property = getQueryResult(wait4Query(run_query(query)))[0]['Data'][0]['VarCharValue']
+          
+                      tableCreatedAt = re.findall(epocRegex, property)
+                      if tableCreatedAt:
+                          print("Table: {} created at: {}".format(table, tableCreatedAt[0]))
+                          if (datetime.utcnow() - datetime.utcfromtimestamp(int(tableCreatedAt[0]))).days > 30:
+                              print("Table: {} older then 30 days".format(table))
+                              delete['tables'].append(table)
+                              query = "SHOW VIEWS LIKE '{}*_view';".format(table)
+                              for views in getQueryResult(wait4Query(run_query(query))):
+                                  delete['views'].append(views['Data'][0]['VarCharValue'])
+          
+                  for table in delete['tables']:
+                      print("Deleting Table: {}".format(table))
+                      run_query("DROP TABLE IF EXISTS {};".format(table))
+                  for view in delete['views']:
+                      print("Deleting Views: {}".format(view))
+                      run_query("DROP VIEW IF EXISTS {};".format(view))
+          
+              except Exception as e:
+                  print(str(e))
+                  traceback.print_exc()
+              return 0
+      Handler: index.handler
+      Environment:
+        Variables:
+          AthenaDbName: !Ref AthenaDBName
+          OutputBucket: !Sub s3://${OutputBucket}/
+      FunctionName: Delete-Old-Athena-Db-View-Function
+      Role: !GetAtt DeleteOldAthenaDbViewRole.Arn
+      Runtime: python3.7
+      Timeout: 300
+  DeleteOldAthenaDbViewRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: DeleteOldAthenaDbViewPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: s3:*
+            Resource: '*'
+          - Effect: Allow
+            Action: athena:*
+            Resource: '*'
+          - Effect: Allow
+            Action: glue:*
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+  LambdaCron:
+    Properties:
+      Description: Clean Athena tables & views older then 30 days
+      ScheduleExpression: "rate(1 day)"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt DeleteOldAthenaDbViewFunction.Arn
+          Id: Delete-Old-Athena-Db-View-Cron
+    Type: AWS::Events::Rule
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: DeleteOldAthenaDbViewFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "LambdaCron"
+          - "Arn"
 
 Outputs:
   OutputLocation:
