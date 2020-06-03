@@ -407,7 +407,7 @@ Resources:
       FunctionName: Delete-Old-Athena-Db-View-Function
       Role: !GetAtt DeleteOldAthenaDbViewRole.Arn
       Runtime: python3.7
-      Timeout: 300
+      Timeout: 900
   DeleteOldAthenaDbViewRole:
     Type: AWS::IAM::Role
     Properties:
