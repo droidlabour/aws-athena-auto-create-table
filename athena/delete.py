@@ -46,7 +46,6 @@ def run_query(query):
 def handler(event, context):
     print(json.dumps(event))
     epocRegex = r'\t(\d.+)$'
-    delete = {'tables': [], 'views': []}
 
     try:
         query = 'SHOW TABLES;'
@@ -62,18 +61,12 @@ def handler(event, context):
                 print("Table: {} created at: {}".format(table, tableCreatedAt[0]))
                 if (datetime.utcnow() - datetime.utcfromtimestamp(int(tableCreatedAt[0]))).days > 30:
                     print("Table: {} older then 30 days".format(table))
-                    delete['tables'].append(table)
+                    print("Deleting Table: {}".format(table))
+                    run_query("DROP TABLE IF EXISTS {};".format(table))
                     query = "SHOW VIEWS LIKE '{}*_view';".format(table)
                     for views in getQueryResult(wait4Query(run_query(query))):
-                        delete['views'].append(views['Data'][0]['VarCharValue'])
-
-        for table in delete['tables']:
-            print("Deleting Table: {}".format(table))
-            run_query("DROP TABLE IF EXISTS {};".format(table))
-        for view in delete['views']:
-            print("Deleting Views: {}".format(view))
-            run_query("DROP VIEW IF EXISTS {};".format(view))
-
+                        print("Deleting Views: {}".format(views['Data'][0]['VarCharValue']))
+                        run_query("DROP VIEW IF EXISTS {};".format(views['Data'][0]['VarCharValue']))
     except Exception as e:
         print(str(e))
         traceback.print_exc()
