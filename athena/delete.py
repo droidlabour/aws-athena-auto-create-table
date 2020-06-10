@@ -54,7 +54,10 @@ def handler(event, context):
             table = tableResult['Data'][0]['VarCharValue']
             print("Table: {}".format(table))
             query = "SHOW TBLPROPERTIES {}('transient_lastDdlTime');".format(table)
-            property = getQueryResult(wait4Query(run_query(query)))[0]['Data'][0]['VarCharValue']
+            property = getQueryResult(wait4Query(run_query(query)))
+            if not property:
+                continue
+            property = property[0]['Data'][0]['VarCharValue']
 
             tableCreatedAt = re.findall(epocRegex, property)
             if tableCreatedAt:
