@@ -10,6 +10,11 @@ Metadata:
       Parameters:
       - InputBucketName
       - AthenaDBName
+    - Label:
+        default: IAM Credentials Report
+      Parameters:
+      - IamReportBucketName
+      - IamReportBucketFolder
 
 Parameters:
   InputBucketName:
@@ -23,6 +28,12 @@ Parameters:
     Type: String
     Default: 1.0
     Description: Leave this empty, this is just for debugging purpose.
+  IamReportBucketName:
+    Type: String
+    Description: S3 Bucket where IAM credential report will be uploaded
+  IamReportBucketFolder:
+    Type: String
+    Description: S3 Bucket folder where IAM credential report will be uploaded
 
 Resources:
   InputBucket:
@@ -437,7 +448,7 @@ Resources:
             - logs:CreateLogStream
             - logs:PutLogEvents
             Resource: arn:aws:logs:*:*:*
-  LambdaCron:
+  DeleteOldAthenaDbViewLambdaCron:
     Properties:
       Description: Clean Athena tables & views older then 30 days
       ScheduleExpression: "rate(1 day)"
@@ -446,7 +457,7 @@ Resources:
         - Arn: !GetAtt DeleteOldAthenaDbViewFunction.Arn
           Id: Delete-Old-Athena-Db-View-Cron
     Type: AWS::Events::Rule
-  PermissionForEventsToInvokeLambda:
+  EventPermissionToInvokeDeleteOldAthenaDbViewLambda:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName:
@@ -455,8 +466,100 @@ Resources:
       Principal: "events.amazonaws.com"
       SourceArn:
         Fn::GetAtt:
-          - "LambdaCron"
+          - "DeleteOldAthenaDbViewLambdaCron"
           - "Arn"
+  IamCredentialsReportFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import os
+          import json
+          from time import sleep
+          from datetime import date
+          
+          import boto3
+          
+          iam = boto3.client('iam')
+          s3 = boto3.client('s3')
+          s3Bucket = os.getenv('IamReportBucketName')
+          s3Dir = os.getenv('IamReportBucketFolder')
+          
+          
+          def handler(event, context):
+              print(json.dumps(event))
+              while iam.generate_credential_report()['State'] != 'COMPLETE':
+                  print('Waiting for generate_credential_report to finish')
+                  sleep(5)
+
+              f=os.path.normpath(s3Dir).strip('/') + '/IAM_credential_report' + ' ' + date.today().strftime('%B %d %Y') + '.csv'
+              print('Uploading credentials report to S3 file => ' + f)
+              s3.put_object(
+                  Bucket=s3Bucket,
+                  Key=f,
+                  Body=iam.get_credential_report()['Content']
+              )
+              return 0
+      Handler: index.handler
+      Environment:
+        Variables:
+          IamReportBucketName: !Ref IamReportBucketName
+          IamReportBucketFolder: !Ref IamReportBucketFolder
+      FunctionName: Iam-Credentials-Report-Function
+      Role: !GetAtt IamCredentialsReportRole.Arn
+      Runtime: python3.7
+      Timeout: 300
+  IamCredentialsReportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: IamCredentialsReportPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: s3:*
+            Resource: '*'
+          - Effect: Allow
+            Action: iam:*
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*
+  IamCredentialsReportLambdaCron:
+    Properties:
+      Description: Generate IAM Credentials Report
+      ScheduleExpression: "rate(1 day)"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt IamCredentialsReportFunction.Arn
+          Id: Iam-Credentials-Report-Cron
+    Type: AWS::Events::Rule
+  EventPermissionToInvokeIamCredentialsReportLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Ref: IamCredentialsReportFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "IamCredentialsReportLambdaCron"
+          - "Arn"
+
 
 Outputs:
   OutputLocation:
