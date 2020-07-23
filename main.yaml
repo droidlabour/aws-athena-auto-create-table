@@ -492,7 +492,7 @@ Resources:
                   print('Waiting for generate_credential_report to finish')
                   sleep(5)
 
-              f=os.path.normpath(s3Dir).strip('/') + '/IAM_credential_report' + ' ' + date.today().strftime('%B %d %Y') + '.csv'
+              f=os.path.normpath(s3Dir).strip('/') + '/iam_report_' + date.today().strftime('%m_%d_%Y') + '/IAM_credential_report' + ' ' + date.today().strftime('%B %d %Y') + '.csv'
               print('Uploading credentials report to S3 file => ' + f)
               s3.put_object(
                   Bucket=s3Bucket,
