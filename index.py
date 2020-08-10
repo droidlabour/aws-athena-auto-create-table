@@ -7,6 +7,7 @@ from urllib.parse import unquote
 
 import boto3
 
+quicksight = boto3.client('quicksight')
 athena = boto3.client('athena')
 s3 = boto3.client('s3')
 dbName = os.getenv('AthenaDbName')
@@ -51,6 +52,25 @@ def run_query(query):
     )['QueryExecutionId']
     print("query id: {}".format(qid))
     return qid
+
+
+def updateIamQsAnalysis(newView, DataSetId):
+    r = quicksight.describe_data_set(AwsAccountId=os.getenv('AwsAccountId'), DataSetId=DataSetId)
+    Name = r['DataSet']['Name']
+    PhysicalTableMap = r['DataSet']['PhysicalTableMap']
+    LogicalTableMap = r['DataSet']['LogicalTableMap']
+    ImportMode = r['DataSet']['ImportMode']
+    LogicalTableMap[list(LogicalTableMap.keys())[0]]['Alias'] = newView
+    PhysicalTableMap[list(PhysicalTableMap.keys())[0]]['RelationalTable']['Name'] = newView
+    r = quicksight.update_data_set(
+         AwsAccountId=os.getenv('AwsAccountId'),
+         DataSetId=DataSetId,
+         Name=Name,
+         PhysicalTableMap=PhysicalTableMap,
+         LogicalTableMap=LogicalTableMap,
+         ImportMode=ImportMode
+    )
+    print("New Quicksight dataset created {}".format(newView))
 
 
 def handler(event, context):
@@ -116,6 +136,14 @@ def handler(event, context):
                         query = v.read().format(view_name, table_name)
                         query_id = run_query(query)
                         wait4Query(query_id)
+            
+            if os.getenv('IamReportBucketFolder') in key:
+                r = quicksight.list_data_sets(AwsAccountId=os.getenv('AwsAccountId'))
+                for i in r['DataSetSummaries']:
+                    if i['Name'] == os.getenv('IamQuicksightDatasetName'):
+                        DataSetId = i['DataSetId']
+                        updateIamQsAnalysis(view_name, DataSetId)
+                        break
     except Exception as e:
         print(str(e))
         traceback.print_exc()
