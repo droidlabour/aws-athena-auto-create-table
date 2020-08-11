@@ -15,7 +15,30 @@ Metadata:
       Parameters:
       - IamReportBucketName
       - IamReportBucketFolder
+    - Label:
+        default: IAM Credentials Quicksight Settings
+      Parameters:
       - IamQuicksightDatasetName
+    - Label:
+        default: US Grants Quicksight Settings
+      Parameters:
+      - UsGrantsQuicksightDatasetName
+      - UsGrantsBucketFolder
+    - Label:
+        default: Gams Quicksight Settings
+      Parameters:
+      - GamsQuicksightDatasetName
+      - GamsBucketFolder
+    - Label:
+        default: AD Users Quicksight Settings
+      Parameters:
+      - AdUsersQuicksightDatasetName
+      - AdUsersBucketFolder
+    - Label:
+        default: AD Groups Quicksight Settings
+      Parameters:
+      - AdGroupsQuicksightDatasetName
+      - AdGroupsBucketFolder
     - Label:
         default: Lambda Settings
       Parameters:
@@ -37,18 +60,42 @@ Parameters:
   IamReportBucketName:
     Type: String
     Description: S3 Bucket where IAM credential report will be uploaded
-  IamReportBucketFolder:
-    Type: String
-    Description: S3 Bucket folder where IAM credential report will be uploaded
-  IamQuicksightDatasetName:
-    Type: String
-    Description: Quicksight dataset name for IAM report
   LambdaS3Bucket:
     Type: String
     Description: S3 Bucket (must be in the same AWS Region as the lambda function) where lambda package is stored
   CreateTableLambdaPackage:
     Type: String
     Description: The Amazon S3 key of the deployment Lambda package
+  IamQuicksightDatasetName:
+    Type: String
+    Description: Quicksight dataset name for IAM report
+  UsGrantsQuicksightDatasetName:
+    Type: String
+    Description: Quicksight dataset name for US Grants report
+  GamsQuicksightDatasetName:
+    Type: String
+    Description: Quicksight dataset name for Gams report
+  AdUsersQuicksightDatasetName:
+    Type: String
+    Description: Quicksight dataset name for AD Users report
+  AdGroupsQuicksightDatasetName:
+    Type: String
+    Description: Quicksight dataset name for AD Groups report
+  IamReportBucketFolder:
+    Type: String
+    Description: S3 Bucket folder where IAM credential report will be uploaded
+  UsGrantsBucketFolder:
+    Type: String
+    Description: S3 Bucket folder where US grants report will be uploaded
+  GamsBucketFolder:
+    Type: String
+    Description: S3 Bucket folder where Gams report will be uploaded
+  AdUsersBucketFolder:
+    Type: String
+    Description: S3 Bucket folder where AD Users report will be uploaded
+  AdGroupsBucketFolder:
+    Type: String
+    Description: S3 Bucket folder where AD Groups report will be uploaded
 
 Resources:
   InputBucket:
@@ -97,9 +144,17 @@ Resources:
         Variables:
           AthenaDbName: !Ref AthenaDBName
           OutputBucket: !Sub s3://${OutputBucket}/
-          IamQuicksightDatasetName: !Ref IamQuicksightDatasetName
-          IamReportBucketFolder: !Ref IamReportBucketFolder
           AwsAccountId: !Ref AWS::AccountId
+          IamQuicksightDatasetName: !Ref IamQuicksightDatasetName
+          UsGrantsQuicksightDatasetName: !Ref UsGrantsQuicksightDatasetName
+          GamsQuicksightDatasetName: !Ref GamsQuicksightDatasetName
+          AdUsersQuicksightDatasetName: !Ref AdUsersQuicksightDatasetName
+          AdGroupsQuicksightDatasetName: !Ref AdGroupsQuicksightDatasetName
+          IamReportBucketFolder: !Ref IamReportBucketFolder
+          UsGrantsBucketFolder: !Ref UsGrantsBucketFolder
+          GamsBucketFolder: !Ref GamsBucketFolder
+          AdUsersBucketFolder: !Ref AdUsersBucketFolder
+          AdGroupsBucketFolder: !Ref AdGroupsBucketFolder
       FunctionName: Quicksight-Athena-Function
       Role: !GetAtt CreateTableRole.Arn
       Runtime: python3.7

@@ -12,6 +12,20 @@ athena = boto3.client('athena')
 s3 = boto3.client('s3')
 dbName = os.getenv('AthenaDbName')
 oputBucket = os.getenv('OutputBucket')
+bucketFolders = [
+    os.getenv('IamReportBucketFolder'),
+    os.getenv('UsGrantsBucketFolder'),
+    os.getenv('GamsBucketFolder'),
+    os.getenv('AdUsersBucketFolder'),
+    os.getenv('AdGroupsBucketFolder'),
+]
+qsDatasetNames = [
+    os.getenv('IamQuicksightDatasetName'),
+    os.getenv('UsGrantsQuicksightDatasetName'),
+    os.getenv('GamsQuicksightDatasetName'),
+    os.getenv('AdUsersQuicksightDatasetName'),
+    os.getenv('AdGroupsQuicksightDatasetName'),
+]
 createTable = """
 CREATE EXTERNAL TABLE IF NOT EXISTS
   {}.{} {}
@@ -136,14 +150,14 @@ def handler(event, context):
                         query = v.read().format(view_name, table_name)
                         query_id = run_query(query)
                         wait4Query(query_id)
-            
-            if os.getenv('IamReportBucketFolder') in key:
-                r = quicksight.list_data_sets(AwsAccountId=os.getenv('AwsAccountId'))
-                for i in r['DataSetSummaries']:
-                    if i['Name'] == os.getenv('IamQuicksightDatasetName'):
-                        DataSetId = i['DataSetId']
-                        updateIamQsAnalysis(view_name, DataSetId)
-                        break
+            for k, v in enumerate(bucketFolders):
+                if v in key:
+                    r = quicksight.list_data_sets(AwsAccountId=os.getenv('AwsAccountId'))
+                    for i in r['DataSetSummaries']:
+                        if i['Name'] == qsDatasetNames[k]:
+                            DataSetId = i['DataSetId']
+                            updateIamQsAnalysis(view_name, DataSetId)
+                            break
     except Exception as e:
         print(str(e))
         traceback.print_exc()
