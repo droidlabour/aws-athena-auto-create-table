@@ -139,6 +139,7 @@ def handler(event, context):
             x.append('views/')
             view_path = '/' . join(x)
             files = s3.list_objects(Bucket=bucket, Prefix=view_path)
+
             if 'Contents' in files.keys():
                 for k, f in enumerate(files['Contents']):
                     if f['Key'].endswith('/'):
@@ -150,13 +151,23 @@ def handler(event, context):
                         query = v.read().format(view_name, table_name)
                         query_id = run_query(query)
                         wait4Query(query_id)
+
             for k, v in enumerate(bucketFolders):
                 if v in key:
-                    r = quicksight.list_data_sets(AwsAccountId=os.getenv('AwsAccountId'))
-                    for i in r['DataSetSummaries']:
-                        if i['Name'] == qsDatasetNames[k]:
-                            DataSetId = i['DataSetId']
-                            updateIamQsAnalysis(view_name, DataSetId)
+                    isUpdated = False
+                    args = {'AwsAccountId': os.getenv('AwsAccountId')}
+                    while not isUpdated:
+                        print('Finding dataset match for {}'.format(v))
+                        r = quicksight.list_data_sets(**args)
+                        for i in r['DataSetSummaries']:
+                            if i['Name'] == qsDatasetNames[k]:
+                                DataSetId = i['DataSetId']
+                                updateIamQsAnalysis(view_name, DataSetId)
+                                isUpdated = True
+                                break
+                        if 'NextToken' in r:
+                            args['NextToken'] = r['NextToken']
+                        else:
                             break
     except Exception as e:
         print(str(e))
