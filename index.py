@@ -84,6 +84,7 @@ def updateIamQsAnalysis(newView, DataSetId):
          LogicalTableMap=LogicalTableMap,
          ImportMode=ImportMode
     )
+    print(r)
     print("New Quicksight dataset created {}".format(newView))
 
 
